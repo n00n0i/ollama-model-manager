@@ -1,0 +1,238 @@
+---
+# Ansible Playbook: Deploy Ollama + Model Manager
+# Usage: ansible-playbook -i inventory.ini deploy-ollama.yml
+
+- name: Deploy Ollama and Model Manager
+  hosts: ollama_servers
+  become: yes
+  vars:
+    ollama_version: "latest"
+    manager_version: "latest"
+    ollama_port: 11434
+    manager_port: 8080
+    data_dir: "/var/lib/ollama"
+    install_dir: "/opt/ollama-manager"
+    
+  tasks:
+    # System Preparation
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - python3-pip
+          - git
+        state: present
+      when: ansible_os_family == "Debian"
+
+    # GPU Detection
+    - name: Check for NVIDIA GPU
+      shell: "nvidia-smi --query-gpu=name --format=csv,noheader | head -1"
+      register: nvidia_gpu
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set GPU type fact
+      set_fact:
+        gpu_type: "{% if nvidia_gpu.rc == 0 %}nvidia{% else %}cpu{% endif %}"
+        gpu_name: "{{ nvidia_gpu.stdout | default('none') }}"
+
+    - name: Display GPU info
+      debug:
+        msg: "Detected GPU: {{ gpu_name }} (Type: {{ gpu_type }})"
+
+    # Docker Installation
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    # NVIDIA Container Toolkit (if NVIDIA GPU)
+    - name: Add NVIDIA Container Toolkit GPG key
+      apt_key:
+        url: https://nvidia.github.io/nvidia-docker/gpgkey
+        state: present
+      when: gpu_type == "nvidia"
+
+    - name: Add NVIDIA Container Toolkit repository
+      apt_repository:
+        repo: "deb https://nvidia.github.io/nvidia-docker/{{ ansible_distribution | lower }}{{ ansible_distribution_version }}/nvidia-docker.list"
+        state: present
+        filename: nvidia-docker
+      when: gpu_type == "nvidia"
+
+    - name: Install NVIDIA Container Toolkit
+      apt:
+        name:
+          - nvidia-docker2
+        state: present
+        update_cache: yes
+      when: gpu_type == "nvidia"
+
+    - name: Restart Docker for NVIDIA
+      systemd:
+        name: docker
+        state: restarted
+      when: gpu_type == "nvidia"
+
+    # Create Directories
+    - name: Create data directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ data_dir }}"
+        - "{{ data_dir }}/models"
+        - "{{ data_dir }}/uploads"
+        - "{{ data_dir }}/logs"
+        - "{{ install_dir }}"
+
+    # Generate Docker Compose
+    - name: Template Docker Compose file
+      template:
+        src: docker-compose.yml.j2
+        dest: "{{ install_dir }}/docker-compose.yml"
+        mode: '0644'
+      vars:
+        gpu_type: "{{ gpu_type }}"
+
+    - name: Template environment file
+      template:
+        src: .env.j2
+        dest: "{{ install_dir }}/.env"
+        mode: '0600'
+
+    # Deploy Services
+    - name: Pull Docker images
+      community.docker.docker_compose:
+        project_src: "{{ install_dir }}"
+        pull: yes
+        state: present
+
+    - name: Start services
+      community.docker.docker_compose:
+        project_src: "{{ install_dir }}"
+        state: present
+        build: yes
+
+    # Wait for Ollama
+    - name: Wait for Ollama to be ready
+      uri:
+        url: "http://localhost:{{ ollama_port }}/api/tags"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 2
+      ignore_errors: yes
+
+    # Pull default models
+    - name: Pull default model (tinyllama for CPU)
+      shell: "docker exec ollama ollama pull tinyllama"
+      when: gpu_type == "cpu"
+      ignore_errors: yes
+
+    - name: Pull default models (llama2 for GPU)
+      shell: "docker exec ollama ollama pull llama2"
+      when: gpu_type == "nvidia"
+      ignore_errors: yes
+
+    # Create systemd service
+    - name: Create systemd service file
+      template:
+        src: ollama-manager.service.j2
+        dest: /etc/systemd/system/ollama-manager.service
+        mode: '0644'
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable ollama-manager service
+      systemd:
+        name: ollama-manager
+        enabled: yes
+
+    # Create CLI
+    - name: Create management CLI
+      template:
+        src: ollama-manager.j2
+        dest: /usr/local/bin/ollama-manager
+        mode: '0755'
+
+    # Verify deployment
+    - name: Check Ollama status
+      uri:
+        url: "http://localhost:{{ ollama_port }}/api/tags"
+        method: GET
+        status_code: 200
+      register: ollama_status
+
+    - name: Check Manager status
+      uri:
+        url: "http://localhost:{{ manager_port }}/api/health"
+        method: GET
+        status_code: 200
+      register: manager_status
+
+    - name: Display deployment info
+      debug:
+        msg:
+          - "========================================"
+          - "Ollama + Model Manager Deployed!"
+          - "========================================"
+          - "GPU Type: {{ gpu_type }}"
+          - "Ollama API: http://{{ ansible_host }}:{{ ollama_port }}"
+          - "Manager UI: http://{{ ansible_host }}:{{ manager_port }}"
+          - "========================================"
+
+    # Install monitoring (optional)
+    - name: Deploy monitoring stack
+      community.docker.docker_compose:
+        project_src: "{{ install_dir }}"
+        files:
+          - docker-compose.monitoring.yml
+        state: present
+      when: deploy_monitoring | default(false)
+      ignore_errors: yes

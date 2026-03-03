@@ -1,0 +1,9 @@
+[ollama_servers]
+# Add your RunPod/Lambda Cloud instances here
+# Example:
+# vudx2n29bxtv8e-644118b7@ssh.runpod.io ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_ed25519
+# 203.0.113.1 ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/id_ed25519
+
+[ollama_servers:vars]
+ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'

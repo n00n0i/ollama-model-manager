@@ -1,0 +1,49 @@
+#!/bin/bash
+# Ollama Manager CLI
+
+COMMAND=${1:-status}
+INSTALL_DIR="{{ install_dir }}"
+
+case $COMMAND in
+    start)
+        systemctl start ollama-manager
+        echo "✅ Ollama Manager started"
+        ;;
+    stop)
+        systemctl stop ollama-manager
+        echo "⏹️  Ollama Manager stopped"
+        ;;
+    restart)
+        systemctl restart ollama-manager
+        echo "🔄 Ollama Manager restarted"
+        ;;
+    status)
+        echo "📊 Ollama Manager Status"
+        echo "========================"
+        systemctl status ollama-manager --no-pager
+        echo ""
+        echo "🐳 Docker Containers:"
+        docker-compose -f $INSTALL_DIR/docker-compose.yml ps
+        ;;
+    logs)
+        docker-compose -f $INSTALL_DIR/docker-compose.yml logs -f
+        ;;
+    update)
+        echo "🔄 Updating Ollama Manager..."
+        cd $INSTALL_DIR
+        docker-compose pull
+        docker-compose up -d
+        echo "✅ Update complete"
+        ;;
+    gpu)
+        echo "🎮 GPU Information:"
+        nvidia-smi 2>/dev/null || echo "No NVIDIA GPU detected"
+        ;;
+    models)
+        echo "📦 Installed Models:"
+        curl -s http://localhost:{{ ollama_port }}/api/tags | jq -r '.models[].name' 2>/dev/null || echo "Ollama not ready"
+        ;;
+    *)
+        echo "Usage: ollama-manager {start|stop|restart|status|logs|update|gpu|models}"
+        ;;
+esac

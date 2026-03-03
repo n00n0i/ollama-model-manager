@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:{{ ollama_version }}
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "{{ ollama_port }}:11434"
+    volumes:
+      - {{ data_dir }}/models:/root/.ollama
+      - {{ data_dir }}/logs:/var/log/ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+{% if gpu_type == "nvidia" %}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+{% endif %}
+
+  manager:
+    image: n00n0i/ollama-model-manager:{{ manager_version }}
+    container_name: ollama-manager
+    restart: unless-stopped
+    ports:
+      - "{{ manager_port }}:8080"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_PORT={{ ollama_port }}
+      - DATA_DIR=/data
+      - GPU_TYPE={{ gpu_type }}
+    volumes:
+      - {{ data_dir }}/uploads:/data/uploads
+      - {{ data_dir }}/logs:/data/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - ollama
+
+{% if gpu_type == "nvidia" %}
+  gpu-exporter:
+    image: nvidia/dcgm-exporter:latest
+    container_name: ollama-gpu-exporter
+    restart: unless-stopped
+    ports:
+      - "9400:9400"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+{% endif %}
